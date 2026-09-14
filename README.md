@@ -64,7 +64,7 @@ the local configuration does not update hosted Auth settings.
 
 ## Required configuration and OWNER bootstrap
 
-Copy `.env.example` to `.env` inside this folder and fill in your own configuration.
+Use the existing `C:\Users\Rodzel Te\Documents\Downloads\RampageBot\.env` file for local configuration.
 Use the Supabase **anon/publishable key** for browser variables. The service-role
 key belongs only to trusted Node processes and must never be assigned to a `VITE_`
 variable. Vite's client code imports only dashboard/shared modules. Vite rejects
@@ -177,7 +177,7 @@ but the top-up integration is not modeled as a direct GCash API. Automatic produ
 payment confirmation still requires an approved QR Ph provider, production credentials,
 and that provider's webhook documentation.
 
-Set the Phase 3 values shown in `.env.example`. Use a random secret of at least
+Set the Phase 3 values in the existing `.env`. Use a random secret of at least
 16 characters for `QRPH_WEBHOOK_SECRET`, and set the same secret for the Edge
 Function. Keep all Discord and provider secrets outside `VITE_` variables.
 
