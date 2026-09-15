@@ -10,7 +10,7 @@ The Phase 3 code, additive database migration, Edge Function, Discord `/topup` f
 
 Modified: `package.json`, `pnpm-lock.yaml`, `README.md`, `supabase/config.toml`, `src/shared/models.ts`, `src/dashboard/lib/data.ts`, `src/dashboard/pages/OverviewPage.tsx`, `src/dashboard/pages/PlaceholderPage.tsx`, `src/dashboard/routes/DashboardRoutes.tsx`, `src/dashboard/style.css`, `tests/database.test.ts`, `tests/dashboard-data.test.ts`, and `tests/helpers/dashboardClient.ts`.
 
-Added: `supabase/migrations/20260914000200_phase3_topups.sql`, `supabase/functions/topup-webhook/index.ts`, the `src/bot` files listed in section 6, `src/dashboard/pages/PaymentsPage.tsx`, `scripts/register-bot.ts`, `scripts/simulate-topup.ts`, `tests/topup.test.ts`, and this report. Local configuration uses the existing gitignored `.env`; no `.env.example` is retained.
+Added: `supabase/migrations/20260914000200_phase3_topups.sql`, `supabase/functions/topup-webhook/index.ts`, the `src/bot` files listed in section 6, `src/dashboard/pages/PaymentsPage.tsx`, `scripts/register-bot.ts`, `scripts/simulate-topup.ts`, `tests/topup.test.ts`, and this report. Local configuration uses only the existing gitignored `.env`; no separate environment template is retained.
 
 The Phase 1 migration was not changed. Its SHA256 remains `AA59453485753D05D4E5928971FFB6B8036D45AE3478EE4DAB27B353EAC5B257`.
 
@@ -129,9 +129,9 @@ The live Payments route opens and correctly requires staff login. A post-login d
 
 ## 24. Configuration still required
 
-- Set the remaining Edge Function secret: a random `QRPH_WEBHOOK_SECRET` of at least 16 characters. `TOPUP_PROVIDER=qrph_mock` and `NODE_ENV=development` are the final remote configuration.
+- Hosted Edge Function configuration now includes `TOPUP_PROVIDER=qrph_mock`, `NODE_ENV=development`, and the `QRPH_WEBHOOK_SECRET` sourced from the existing local `.env` without displaying it.
 - Set local `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, and `DISCORD_GUILD_ID`.
-- Set local `TOPUP_PROVIDER=qrph_mock`, the same `QRPH_WEBHOOK_SECRET`, and optional top-up limit/expiry overrides. Defaults are ₱100 minimum, ₱100,000 maximum, and 30 minutes.
+- Local QR Ph provider, webhook secret, and top-up limits are configured in the existing `.env`. Discord credentials remain required for the live bot flow.
 - Sign in to the visible localhost dashboard and confirm Payments loads after authentication.
 - Run `pnpm bot:register`, `pnpm bot:start`, and the documented manual flow in `README.md`.
 

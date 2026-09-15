@@ -1,6 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 import type { StaffProfile } from '../../src/shared/models';
-import type { TopupWithMember } from '../../src/dashboard/lib/data';
+import type {
+  LobbyWithRelations,
+  TopupWithMember,
+} from '../../src/dashboard/lib/data';
 
 export const ownerFixture: StaffProfile = {
   id: '10000000-0000-4000-8000-000000000001',
@@ -73,6 +76,43 @@ export const topupFixture: TopupWithMember = {
     display_name: memberFixture.display_name,
   },
 };
+export const discordChannelFixture = {
+  channel_id: '777777777777777778',
+  guild_id: '777777777777777777',
+  channel_name: 'scrim-betting',
+  channel_type: 'GUILD_TEXT' as const,
+  can_post: true,
+  active: true,
+  last_synced_at: '2026-09-15T00:00:00Z',
+};
+export const lobbyFixture: LobbyWithRelations = {
+  id: '60000000-0000-4000-8000-000000000001',
+  display_name: 'Lobby 1',
+  status: 'OPEN' as const,
+  discord_guild_id: discordChannelFixture.guild_id,
+  discord_channel_id: discordChannelFixture.channel_id,
+  discord_message_id: null,
+  roster_entry_centavos: 10_000,
+  side_betting_enabled: true,
+  side_bet_min_centavos: 10_000,
+  side_bet_max_centavos: 500_000,
+  platform_fee_bps: 500,
+  winner: null,
+  created_by: ownerFixture.id,
+  created_at: '2026-09-15T00:00:00Z',
+  updated_at: '2026-09-15T00:00:00Z',
+  discord_revision: 1,
+  discord_synced_revision: 0,
+  discord_sync_claimed_at: null,
+  discord_sync_error: null,
+  financial_commitment_at: null,
+  archived_at: null,
+  discord_previous_channel_id: null,
+  discord_previous_message_id: null,
+  discord_channels: { channel_name: discordChannelFixture.channel_name },
+  lobby_players: [],
+  side_bets: [],
+};
 type MockOptions = {
   signedIn?: boolean;
   role?: 'OWNER' | 'ADMIN';
@@ -87,6 +127,8 @@ type MockOptions = {
   staff?: StaffProfile[];
   audit?: (typeof auditFixture)[];
   topups?: (typeof topupFixture)[];
+  channels?: (typeof discordChannelFixture)[];
+  lobbies?: LobbyWithRelations[];
   transactions?: { id: string; amount_centavos: number; created_at: string }[];
   failTable?: string;
   logoutFails?: boolean;
@@ -108,6 +150,8 @@ export async function dashboardClient(options: MockOptions = {}) {
     members.map((member) => ({ user_id: member.id, ...member.wallets }));
   const audits = options.audit ?? [];
   let topups = options.topups ?? [];
+  const channels = options.channels ?? [discordChannelFixture];
+  let lobbies = structuredClone(options.lobbies ?? []);
   const transactions = options.transactions ?? [];
   const calls: {
     path: string;
@@ -240,6 +284,179 @@ export async function dashboardClient(options: MockOptions = {}) {
       ];
       return reply(updated);
     }
+    if (name === 'create_lobby') {
+      if (!state.active || state.nonstaff)
+        return reply({ code: '42501', message: 'Active staff required' }, 403);
+      const channel = channels.find(
+        (entry) => entry.channel_id === body.p_discord_channel_id,
+      );
+      if (!channel)
+        return reply(
+          { code: '22023', message: 'Invalid Discord channel' },
+          400,
+        );
+      const created = {
+        ...lobbyFixture,
+        id: '60000000-0000-4000-8000-000000000099',
+        display_name: String(body.p_display_name),
+        discord_guild_id: String(body.p_discord_guild_id),
+        discord_channel_id: String(body.p_discord_channel_id),
+        roster_entry_centavos: Number(body.p_roster_entry_centavos),
+        side_betting_enabled: Boolean(body.p_side_betting_enabled),
+        side_bet_min_centavos:
+          body.p_side_bet_min_centavos === null
+            ? null
+            : Number(body.p_side_bet_min_centavos),
+        side_bet_max_centavos:
+          body.p_side_bet_max_centavos === null
+            ? null
+            : Number(body.p_side_bet_max_centavos),
+        platform_fee_bps: Number(body.p_platform_fee_bps),
+        discord_channels: { channel_name: channel.channel_name },
+        lobby_players: [],
+      };
+      lobbies = [created, ...lobbies];
+      const row = Object.fromEntries(
+        Object.entries(created).filter(
+          ([key]) =>
+            key !== 'discord_channels' &&
+            key !== 'lobby_players' &&
+            key !== 'side_bets',
+        ),
+      );
+      return reply(row);
+    }
+    if (name === 'add_lobby_player') {
+      if (!state.active || state.nonstaff)
+        return reply({ code: '42501', message: 'Active staff required' }, 403);
+      const lobby = lobbies.find((entry) => entry.id === body.p_lobby_id);
+      const member = members.find((entry) => entry.id === body.p_member_id);
+      if (!lobby || !member)
+        return reply({ code: 'P0002', message: 'Not found' }, 404);
+      if (
+        (member.wallets?.available_centavos ?? 0) < lobby.roster_entry_centavos
+      )
+        return reply({ code: '22003', message: 'Insufficient balance' }, 400);
+      const player = {
+        id: '61000000-0000-4000-8000-000000000001',
+        lobby_id: lobby.id,
+        user_id: member.id,
+        discord_user_id: member.discord_user_id,
+        display_name:
+          member.display_name ??
+          member.discord_username ??
+          member.discord_user_id,
+        team: body.p_team as 'RADIANT' | 'DIRE',
+        stake_centavos: lobby.roster_entry_centavos,
+        status: 'ACTIVE' as const,
+        added_by: currentStaff().id,
+        added_source: 'DASHBOARD' as const,
+        added_at: new Date().toISOString(),
+        removed_by: null,
+        removed_at: null,
+        removed_source: null,
+        members: {
+          discord_user_id: member.discord_user_id,
+          discord_username: member.discord_username,
+          display_name: member.display_name,
+        },
+      };
+      lobby.lobby_players.push(player);
+      lobby.discord_revision += 1;
+      lobby.financial_commitment_at ??= new Date().toISOString();
+      return reply(player);
+    }
+    if (name === 'remove_lobby_player') {
+      const lobby = lobbies.find((entry) =>
+        entry.lobby_players.some(
+          (player) => player.id === body.p_lobby_player_id,
+        ),
+      );
+      const player = lobby?.lobby_players.find(
+        (entry) => entry.id === body.p_lobby_player_id,
+      );
+      if (!lobby || !player)
+        return reply({ code: 'P0002', message: 'Not found' }, 404);
+      player.status = 'REMOVED';
+      player.removed_by = currentStaff().id;
+      player.removed_at = new Date().toISOString();
+      player.removed_source = 'DASHBOARD';
+      lobby.discord_revision += 1;
+      return reply(player);
+    }
+    if (name === 'update_lobby') {
+      const lobby = lobbies.find((entry) => entry.id === body.p_lobby_id);
+      if (!lobby) return reply({ code: 'P0002', message: 'Not found' }, 404);
+      const committed =
+        lobby.financial_commitment_at !== null ||
+        lobby.lobby_players.length > 0;
+      if (
+        committed &&
+        (Number(body.p_roster_entry_centavos) !== lobby.roster_entry_centavos ||
+          Number(body.p_platform_fee_bps) !== lobby.platform_fee_bps ||
+          body.p_discord_channel_id !== lobby.discord_channel_id ||
+          Boolean(body.p_side_betting_enabled) !== lobby.side_betting_enabled ||
+          body.p_side_bet_min_centavos !== lobby.side_bet_min_centavos ||
+          body.p_side_bet_max_centavos !== lobby.side_bet_max_centavos)
+      )
+        return reply(
+          { code: '42501', message: 'Financial lobby terms are immutable' },
+          403,
+        );
+      const channel = channels.find(
+        (entry) => entry.channel_id === body.p_discord_channel_id,
+      );
+      if (!channel)
+        return reply({ code: '22023', message: 'Invalid channel' }, 400);
+      lobby.display_name = String(body.p_display_name);
+      lobby.discord_channel_id = String(body.p_discord_channel_id);
+      lobby.roster_entry_centavos = Number(body.p_roster_entry_centavos);
+      lobby.side_betting_enabled = Boolean(body.p_side_betting_enabled);
+      lobby.side_bet_min_centavos =
+        body.p_side_bet_min_centavos === null
+          ? null
+          : Number(body.p_side_bet_min_centavos);
+      lobby.side_bet_max_centavos =
+        body.p_side_bet_max_centavos === null
+          ? null
+          : Number(body.p_side_bet_max_centavos);
+      lobby.platform_fee_bps = Number(body.p_platform_fee_bps);
+      lobby.discord_channels = { channel_name: channel.channel_name };
+      lobby.discord_revision += 1;
+      return reply(lobby);
+    }
+    if (
+      name === 'postpone_lobby' ||
+      name === 'resume_lobby' ||
+      name === 'cancel_lobby' ||
+      name === 'archive_lobby'
+    ) {
+      const lobby = lobbies.find((entry) => entry.id === body.p_lobby_id);
+      if (!lobby) return reply({ code: 'P0002', message: 'Not found' }, 404);
+      if (name === 'archive_lobby' && state.role !== 'OWNER')
+        return reply({ code: '42501', message: 'OWNER role required' }, 403);
+      lobby.status =
+        name === 'postpone_lobby'
+          ? 'POSTPONED'
+          : name === 'resume_lobby'
+            ? 'OPEN'
+            : name === 'cancel_lobby'
+              ? 'CANCELLED'
+              : 'ARCHIVED';
+      if (name === 'archive_lobby')
+        lobby.archived_at = new Date().toISOString();
+      if (name === 'cancel_lobby') {
+        for (const player of lobby.lobby_players) {
+          if (player.status !== 'ACTIVE') continue;
+          player.status = 'REMOVED';
+          player.removed_by = currentStaff().id;
+          player.removed_at = new Date().toISOString();
+          player.removed_source = 'LOBBY_CANCELLED';
+        }
+      }
+      lobby.discord_revision += 1;
+      return reply(lobby);
+    }
     if (name === state.failTable)
       return reply(
         {
@@ -256,6 +473,29 @@ export async function dashboardClient(options: MockOptions = {}) {
     if (name === 'wallets') return page(wallets);
     if (name === 'wallet_transactions') return page(transactions);
     if (name === 'topups') return page(topups);
+    if (name === 'discord_channels') {
+      let result = channels;
+      if (url.searchParams.get('active') === 'eq.true')
+        result = result.filter((channel) => channel.active);
+      if (url.searchParams.get('can_post') === 'eq.true')
+        result = result.filter((channel) => channel.can_post);
+      return page(result);
+    }
+    if (name === 'lobbies') {
+      const requestedId = url.searchParams.get('id')?.replace(/^eq\./, '');
+      const rows = requestedId
+        ? lobbies.filter((lobby) => lobby.id === requestedId)
+        : lobbies;
+      if (
+        request.headers
+          .get('accept')
+          ?.includes('application/vnd.pgrst.object+json')
+      )
+        return rows[0]
+          ? reply(rows[0])
+          : reply({ code: 'PGRST116', message: 'Not found' }, 406);
+      return page(rows);
+    }
     if (name === 'members') return page(members);
     if (name === 'staff_profiles') {
       let result =

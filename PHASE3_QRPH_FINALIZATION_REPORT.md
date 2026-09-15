@@ -10,7 +10,7 @@ Renamed through provider replacements:
 - `src/bot/providers/MockGCashProvider.ts` → `src/bot/providers/MockQrPhProvider.ts`
 - `supabase/functions/gcash-webhook/index.ts` → `supabase/functions/topup-webhook/index.ts`
 
-Updated `src/bot/config.ts`, bot service/command/interaction/client imports, `scripts/simulate-topup.ts`, `supabase/config.toml`, the existing `.env` variable contract, dashboard release/cashout copy, tests, `README.md`, and Phase reports. The empty obsolete local function directory was removed. No `.env.example` is retained.
+Updated `src/bot/config.ts`, bot service/command/interaction/client imports, `scripts/simulate-topup.ts`, `supabase/config.toml`, the existing `.env` variable contract, dashboard release/cashout copy, tests, `README.md`, and Phase reports. The empty obsolete local function directory was removed. No separate environment template is retained.
 
 ## 2. Legacy top-up GCash references removed
 
@@ -36,7 +36,7 @@ Complete. It retains success, failure, mismatch, late-payment, expiry, and dupli
 
 ## 7. `topup-webhook` status
 
-The Edge Function is deployed and ACTIVE on the linked hosted project. The obsolete hosted function was removed. The new endpoint accepts provider callbacks, verifies the QR Ph mock secret, normalizes the event, and invokes the unchanged common `process_verified_topup` RPC. An unsigned live request returns HTTP 401. It is fail-closed until `QRPH_WEBHOOK_SECRET` is supplied.
+The Edge Function is deployed and ACTIVE on the linked hosted project. The obsolete hosted function was removed. The new endpoint accepts provider callbacks, verifies the QR Ph mock secret, normalizes the event, and invokes the unchanged common `process_verified_topup` RPC. An unsigned live request returns HTTP 401. The existing local `.env` secret was synchronized to the hosted function without displaying it; a correctly signed callback with an unknown provider payment ID reached the database boundary and was safely rejected with HTTP 404.
 
 ## 8. Phase 3 migration status
 
@@ -68,28 +68,25 @@ Preserved and updated. The response is ephemeral, titled `QR PH TOP-UP`, shows e
 
 ## 15. Manual configuration still required
 
-Local `.env` still needs:
+The existing local `.env` now has valid `TOPUP_PROVIDER=qrph_mock`, ₱100–₱100,000 limits, 30-minute expiry, and `QRPH_WEBHOOK_SECRET`. The same secret is configured on the hosted Edge Function. The three Discord variables exist but remain empty:
 
-- `TOPUP_PROVIDER=qrph_mock`
-- `QRPH_WEBHOOK_SECRET=<random value of at least 16 characters>`
 - `DISCORD_BOT_TOKEN`
 - `DISCORD_CLIENT_ID`
 - `DISCORD_GUILD_ID`
 
-The same `QRPH_WEBHOOK_SECRET` must be set as an Edge Function secret. `QRPH_API_KEY` remains empty and unused until an approved production QR Ph provider is selected. Never put these values in a `VITE_` variable or send them through chat.
+`QRPH_API_KEY` remains empty and unused until an approved production QR Ph provider is selected. Never put these values in a `VITE_` variable or send them through chat.
 
 ## 16. Deployment steps
 
-The migration and `topup-webhook` code are already deployed. To finish the mock live flow:
+The migration, `topup-webhook`, provider selection, and webhook secret are already deployed. To finish the mock live flow:
 
-1. Generate a random webhook secret with at least 16 characters and add the five values above to local `.env`.
-2. From this folder, set remote secrets without exposing them in source: `supabase secrets set TOPUP_PROVIDER=qrph_mock NODE_ENV=development QRPH_WEBHOOK_SECRET=YOUR_SECRET`.
-3. Redeploy if the function source changes: `supabase functions deploy topup-webhook --no-verify-jwt`.
-4. Register the canonical guild command: `pnpm bot:register`.
-5. Start the bot: `pnpm bot:start`.
-6. Run `/topup amount:100`, confirm the ephemeral QR Ph PNG, and copy the top-up ID from Payments.
-7. Run `pnpm topup:simulate success TOPUP_ID`; verify one ₱100 wallet credit, one TOPUP ledger entry, `PAID`, one audit event, and a private DM with no public fallback.
-8. Repeat with documented mismatch, late, failure, and duplicate simulations as needed.
+1. Add `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, and `DISCORD_GUILD_ID` to the existing local `.env`.
+2. Redeploy only if the function source changes: `supabase functions deploy topup-webhook --no-verify-jwt`.
+3. Register the canonical guild command: `pnpm bot:register`.
+4. Start the bot: `pnpm bot:start`.
+5. Run `/topup amount:100`, confirm the ephemeral QR Ph PNG, and copy the top-up ID from Payments.
+6. Run `pnpm topup:simulate success TOPUP_ID`; verify one ₱100 wallet credit, one TOPUP ledger entry, `PAID`, one audit event, and a private DM with no public fallback.
+7. Repeat with documented mismatch, late, failure, and duplicate simulations as needed.
 
 The live OWNER Payments dashboard was manually verified after finalization: authentication persisted, the page loaded successfully, filters rendered, and the empty state showed zero payment records. The future Cashouts page displayed the preserved manual GCash Phase 9 wording.
 

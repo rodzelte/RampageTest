@@ -1,11 +1,10 @@
-# Rampage — Phase 3 private QR Ph top-ups
+# Rampage — Phase 4 lobby and roster foundation
 
 Implemented directly in `C:\Users\Rodzel Te\Documents\Downloads\RampageBot`.
-Phase 3 extends the working Phase 1 and Phase 2 foundation. The existing foundation is deployed,
-the OWNER is bootstrapped, and the configured localhost application has been
-smoke-tested with the existing OWNER session. Phase 1 tables, RLS, RPCs, money
-helpers, and bootstrap remain intact. Phase 3 adds one additive migration and the
-`topup-webhook` Edge Function.
+Phase 4 extends the working authentication, dashboard, wallet, and private QR Ph
+top-up foundation with OPEN scrim lobbies and transactional 5v5 roster reservations.
+The existing Phase 1–3 migrations remain unchanged. Phase 4 uses one additive
+migration and keeps Supabase authoritative for lobby, roster, and wallet state.
 
 ## Local checks
 
@@ -29,8 +28,14 @@ not replace a migration rehearsal and Auth smoke test against your Supabase proj
 ## Supabase setup and data preservation
 
 The following setup instructions apply to a new environment only. The current
-project already has the Phase 1 migration and OWNER deployed. Do not rerun or
-replace it. Apply the additive Phase 3 migration after reviewing it and taking a backup.
+project already has the Phase 1–4 migrations and OWNER deployed. Do not rerun or
+replace an applied migration. Review and back up data before applying later additive migrations.
+
+The Phase 4 schema compatibility migration uses `ADD COLUMN IF NOT EXISTS` and
+recreates named checks through `DROP CONSTRAINT IF EXISTS`. It supports environments
+where compatible lobby patch elements already exist without deleting lobby, roster,
+wallet, ledger, or audit data. Never manually rerun an earlier migration already listed
+in Supabase's migration history.
 
 Before applying to an existing project, inspect its migration history and schema,
 back up its data, and compare the five table names below and the isolated
@@ -140,7 +145,8 @@ An invalid or inactive staff account sees: "You are not authorized to access thi
 | `/admins`        | OWNER        | Link existing Auth users, activate/disable admins, edit Discord mappings through existing RPCs |
 | `/audit`         | OWNER        | Read-only audit history with date, source, action, and actor filters                           |
 | `/settings`      | OWNER        | Non-secret application/timezone/environment information                                        |
-| `/lobbies`       | OWNER, ADMIN | Phase 4 placeholder                                                                            |
+| `/lobbies`       | OWNER, ADMIN | Create/list OPEN lobbies using safe cached Discord channels                                    |
+| `/lobbies/:id`   | OWNER, ADMIN | Live 5v5 roster management, reservation pools, and Discord synchronization state               |
 | `/rampage`       | OWNER, ADMIN | Phase 8 placeholder                                                                            |
 | `/payments`      | OWNER, ADMIN | Phase 3 placeholder                                                                            |
 | `/cashouts`      | OWNER, ADMIN | Phase 9 placeholder                                                                            |
@@ -163,8 +169,10 @@ Overview wallet queries paginate past Supabase's default row cap and sum integer
 centavos exactly before using the existing PHP formatter. Tables are paginated;
 queries have loading/error/empty states and abort stale results on unmount.
 Date displays and calendar filters use `APP_TIMEZONE` (default `Asia/Manila`).
-Only the non-secret timezone, application name, and build environment are
-explicitly exposed through Vite's application configuration; secrets remain in Node.
+Only the non-secret timezone, application name, build environment, and validated
+default platform-fee basis points are explicitly exposed through Vite's application
+configuration; secrets remain in Node. `DEFAULT_PLATFORM_FEE_BPS` defaults to `500`
+and accepts integers from `0` through `1000`.
 
 Run `pnpm check:browser` after building. It checks the built files against configured
 private environment values and recognizable service keys without printing them.
@@ -195,11 +203,14 @@ pnpm bot:start
 Manual success flow:
 
 1. In Discord, run `/topup amount:100`. Confirm the response is ephemeral and
-   includes the actual QR image.
+   includes the actual QR image. Confirm no channel message is created.
 2. Open Payments in the dashboard and copy the new top-up UUID.
 3. Run `pnpm topup:simulate success TOPUP_UUID`.
 4. Confirm the wallet gains exactly ₱100.00, Payments shows `PAID`, the audit log
-   contains `TOPUP_PAID`, and the member receives a DM. Nothing is posted publicly.
+   contains `TOPUP_PAID`, and the original ephemeral response removes the QR and
+   shows `PAYMENT RECEIVED`. Confirm the member also receives exactly one private
+   success DM with the amount, status, wallet credit, provider reference, and Manila
+   payment time. Nothing is posted publicly.
 
 Use `pnpm topup:simulate mismatch TOPUP_UUID 90` for an amount-mismatch review.
 Use `pnpm topup:simulate failure TOPUP_UUID` for provider failure. For a late-payment
@@ -208,10 +219,126 @@ run `pnpm topup:simulate late TOPUP_UUID`. Use `duplicate` to submit the same ve
 event five times; the database credits once. Mock simulation refuses to run when
 `NODE_ENV=production` or `TOPUP_PROVIDER` is not `qrph_mock`.
 
-The bot expires stale pending records once per minute. Successful credits and
-OWNER-approved reviews are claimed once for a private Discord DM. If DMs are
-disabled, the credit remains committed, the failure is audited, and no public
-message is used as fallback.
+The bot expires stale pending records once per minute. It keeps each live `/topup`
+interaction handle in process memory for 35 minutes and never stores Discord
+interaction tokens in Supabase. Terminal updates explicitly remove the QR attachment
+and replace the same ephemeral response with its paid, expired, failed, or review
+state. A process restart discards these handles by design.
+
+Discord interaction tokens can expire before payment finishes. A missing or rejected
+ephemeral edit is logged as a presentation failure and never changes the top-up,
+wallet, or ledger. Successful credits and OWNER-approved credits are durably claimed
+once and always send the existing private Discord DM confirmation, regardless of the
+ephemeral edit result. If DMs are disabled, the committed credit remains unchanged,
+the notification failure is audited, and no public message is used as a fallback. QR
+images, amounts, balances, references, and statuses are never sent to a public
+channel.
+
+## Phase 4 lobby and roster flow
+
+Set `DEFAULT_PLATFORM_FEE_BPS=500` in the existing `.env`, then restart the dashboard
+and bot. On startup and every ten minutes, the bot caches usable guild text and
+announcement channels in `discord_channels`; the cache contains only channel IDs,
+names, types, posting capability, and synchronization times. Browser code never
+receives the Discord token. The bot needs View Channel, Send Messages, Embed Links,
+and Read Message History in the chosen test channel.
+
+OWNER and ADMIN can create an OPEN lobby at `/lobbies`. Lobby configuration includes
+the roster entry, optional future side-bet range, and an immutable platform-fee
+snapshot. The fee is disclosed as a percentage of winning profit and is not collected
+in Phase 4. Side-bet settings are configuration only, and the configured minimum must
+be at least the roster entry participation threshold.
+
+Adding a member calls a transactional PostgreSQL RPC. It locks the lobby and wallet,
+enforces one active position per member and five active players per team, transfers
+the entry from available to reserved centavos, appends a deterministic
+`LOBBY_ROSTER_RESERVE` ledger event, audits the operation, and increments the Discord
+revision. Removing an active player from an OPEN lobby performs the inverse once,
+keeps the roster history as `REMOVED`, and appends `LOBBY_ROSTER_RELEASE`. React has no
+direct wallet write path.
+
+The public Discord lobby message includes Join Radiant, Join Dire, and Leave Lobby
+buttons. Button responses are ephemeral and use `interaction.user.id` as the only
+member identity. The same transactional reservation and release core serves dashboard
+and Discord actions. The public message never shows available or reserved balances.
+
+Unused OPEN or POSTPONED lobbies can change financial settings and their Discord
+channel. Once any financial participation occurs, roster entry, platform fee,
+side-bet configuration, and channel become immutable; the display name remains
+editable. Moving an unused lobby retires the old interactive message and creates one
+message in the new channel. Stale buttons are rejected by message ID.
+
+Postponing changes `OPEN` to `POSTPONED`, preserves roster reservations, and disables
+Discord participation. Resuming returns it to `OPEN`. Cancellation atomically releases
+every active roster and side-bet reservation once, preserves financial history, and
+disables the message. OWNER can soft-archive unused lobbies or CANCELLED financial lobbies.
+The default Active list excludes CANCELLED and ARCHIVED records; filters provide access
+to historical entries.
+
+The bot reconciles every lobby whose Discord revision is ahead of its synced revision.
+It posts one public embed, stores the message ID, and edits that same message after
+roster changes. If recording a newly posted message fails, the next retry finds the
+bot's recent lobby embed by its lobby UUID before posting. Discord errors are recorded
+for retry and never roll back a committed database or wallet transaction. The public
+embed shows lobby configuration and active roster pools, without wallet balances or
+private payment information. A 5v5 roster displays `READY TO LOCK` while its database
+status remains `OPEN`.
+
+Supabase Realtime updates lobby list/detail queries after lobby, roster, side-bet, and Discord
+metadata changes. A 30-second refetch remains active as a fallback.
+
+## Phase 5 side betting
+
+`/lobbies` privately lists every OPEN lobby available for roster participation, including
+lobbies where side betting is disabled. It uses an ephemeral select menu with 25 lobbies
+per page, Previous/Next navigation, and a compact selected-lobby summary. `/bet`
+autocomplete remains limited to OPEN lobbies with side betting enabled, works on blank
+or case-insensitive friendly-name searches, and uses lobby UUIDs as option values.
+
+Lobby matchup labels use the earliest ACTIVE Radiant and Dire roster members by
+`added_at`, then row ID, with `TBD` for an empty side. The shared rule feeds `/lobbies`,
+`/bet` autocomplete, the public Discord lobby embed, and the dashboard list/detail views.
+
+`/bet` and the lobby's Bet Radiant/Bet Dire buttons create private, ephemeral betting
+flows. Every intentional interaction creates a separate UUID-backed position and
+human-readable bet number. The database RPC moves integer centavos from available to
+reserved, appends one immutable ledger record, and rejects duplicate delivery of the
+same Discord interaction. `/cancelbet bet:<number>` releases only the invoking member's
+selected active bet while the lobby remains OPEN.
+
+The public lobby message shows active roster and side-bet pools, total pool, imbalance,
+leader, and a bounded active-bet list. It never shows wallet balances or payment data.
+The staff lobby page shows complete active and cancelled bet history. Fee values are
+BigInt projections against winning profit; no fee or revenue is collected in Phase 5.
+
+Manual Phase 5 check:
+
+1. Run `pnpm dev` and `pnpm bot:start` in separate terminals.
+2. Sign in as OWNER, open `/lobbies`, and wait for the channel cache to appear.
+3. Create `Lobby 1` in a test channel with entry `100.00`, side betting enabled,
+   minimum `100.00`, maximum `5000.00`, and platform fee `5.00`.
+4. Confirm Discord receives one embed and shows “5% of winning profit.”
+5. As a member with less than ₱100.00 available, click Join Radiant and confirm the
+   private insufficient-balance response. Top up to at least ₱100.00 and join again.
+6. Confirm available decreases by ₱100.00, reserved increases by ₱100.00, and the same
+   Discord message changes. Click Leave Lobby and confirm one exact release.
+7. Postpone the lobby. Confirm the roster and reservation remain, buttons are disabled,
+   and new participation is rejected. Resume and confirm the buttons return.
+8. In an unused lobby, edit its name, entry, fee, side-bet range, and channel. After a
+   member joins, confirm only its display name remains editable.
+9. Cancel a financial lobby and confirm every active entry is released once. Archive it
+   as OWNER and confirm Active hides it while Archived retains its history.
+10. Fill Radiant and Dire to 5/5 and confirm the dashboard and Discord message say
+    `READY TO LOCK` while database status remains `OPEN`.
+11. Run `/lobbies` and confirm all OPEN roster lobbies appear while postponed and closed
+    lobbies do not. Confirm betting-disabled lobbies remain absent from `/bet` autocomplete.
+12. Place separate `/bet` positions on both sides and confirm each receives its own bet
+    number, reserve ledger entry, and private fee preview.
+13. Cancel one position with `/cancelbet`, retry it, and confirm only one release occurs.
+14. Confirm the public pool updates by editing the same message and the dashboard retains
+    active and cancelled history.
+15. Cancel the lobby and confirm remaining roster and side-bet reservations are released.
+16. Confirm no lobby lock, LIFO, payout, settlement, or platform-fee collection occurs.
 
 ## Tables and RLS
 
@@ -223,6 +350,10 @@ message is used as fallback.
 | `wallet_transactions` | Own linked history; active ADMIN/OWNER         | No application writer in Phase 1; immutable triggers protect updates/deletes/truncation |
 | `audit_logs`          | Active OWNER only                              | Controlled RPCs append; immutable triggers protect updates/deletes/truncation           |
 | `topups`              | Own future Auth-linked row; active ADMIN/OWNER | Trusted bot/webhook RPCs; OWNER-only review RPC; no direct application writes           |
+| `discord_channels`    | Active ADMIN/OWNER                             | Trusted bot RPC synchronizes safe metadata; no direct application writes                |
+| `lobbies`             | Active ADMIN/OWNER                             | Transactional staff and trusted bot synchronization RPCs                                |
+| `lobby_players`       | Active ADMIN/OWNER                             | Transactional add/remove RPCs; immutable financial history                              |
+| `side_bets`           | Active ADMIN/OWNER                             | Service-role betting RPCs; immutable position and ledger history                        |
 
 Anonymous users have no access. Inactive staff lose privileged reads and RPC
 access immediately, though they can still read their own staff profile. No
@@ -250,12 +381,13 @@ is intentionally no wallet correction or other balance mutation API in Phase 1.
 ## Source structure
 
 ```text
-src/dashboard/           Auth provider, router, shell, pages, query helpers
+src/dashboard/           Auth, router, dashboard pages, lobby UI, Realtime/query helpers
+src/bot/                 Discord commands, top-up notifications, lobby channel/message sync
 src/server/              Trusted clients, OWNER bootstrap, Discord identity/guards
-src/shared/              Runtime schemas, integer money helpers, staff Auth client
+src/shared/              Runtime schemas, integer money and fee helpers, staff Auth client
 scripts/                 OWNER bootstrap, ADMIN linking, browser bundle security check
-supabase/migrations/     Versioned Phase 1 SQL
-tests/                   SQL/RLS, SDK, dashboard routes/forms/data, money and bundle tests
+supabase/migrations/     Immutable versioned Phase 1–5 SQL migrations
+tests/                   SQL/RLS/RPC, bot sync, dashboard, money, top-up, and security tests
 ```
 
 Supabase integration follows the official [RLS documentation](https://supabase.com/docs/guides/database/postgres/row-level-security)
@@ -263,11 +395,10 @@ and [email/password sign-in API](https://supabase.com/docs/reference/javascript/
 
 ## Deferred work
 
-Future phases: lobbies/bets, LIFO, settlement, Rampage functionality, cashouts,
-referrals, autopost, realtime, and storage integration. No future-game or sportsbook
-models are included.
+Future phases: manual lobby locking, LIFO, settlement, platform-fee realization,
+Rampage functionality, cashouts, referrals, autopost, and storage integration. No
+`/addplayer`, lock, LIFO, settlement, payout, platform-revenue, future-game, or
+sportsbook implementation is included in Phase 5.
 
 Phase 9 cashout remains a separate manual GCash workflow using the member's GCash
 account name and mobile number. The QR Ph top-up provider does not model cashouts.
-#   R a m p a g e T e s t  
- 

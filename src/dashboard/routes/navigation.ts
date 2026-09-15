@@ -11,6 +11,8 @@ export const navigation = [
   { path: '/settings', label: 'Settings', icon: 'settings', ownerOnly: true },
 ] as const;
 export function canAccessRoute(role: 'OWNER' | 'ADMIN', path: string) {
-  const route = navigation.find((item) => item.path === path);
+  const route = navigation.find(
+    (item) => item.path === path || path.startsWith(`${item.path}/`),
+  );
   return Boolean(route && (!route.ownerOnly || role === 'OWNER'));
 }

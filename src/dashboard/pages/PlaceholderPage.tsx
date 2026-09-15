@@ -2,11 +2,6 @@ import { Icon } from '../components/Icon';
 import { dashboardConfig } from '../lib/config';
 
 const modules = {
-  lobbies: {
-    title: 'Your next match starts here',
-    text: 'Lobby management will be implemented in Phase 4.',
-    phase: 4,
-  },
   rampage: {
     title: 'Head-to-head, coming soon',
     text: 'Rampage functionality will be implemented in Phase 8.',
@@ -60,7 +55,7 @@ export function SettingsPage() {
           </div>
           <div>
             <dt>Current release</dt>
-            <dd>Phase 3 · Private QR Ph Top-ups</dd>
+            <dd>Phase 4 · Lobby and Roster Foundation</dd>
           </div>
         </dl>
       </section>

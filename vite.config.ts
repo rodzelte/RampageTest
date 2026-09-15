@@ -14,7 +14,20 @@ export default defineConfig(({ mode }) => {
     );
   }
   const serverEnv = loadEnv(mode, process.cwd(), 'APP_');
+  const lobbyEnv = loadEnv(mode, process.cwd(), 'DEFAULT_PLATFORM_FEE_');
   const timezone = serverEnv.APP_TIMEZONE || 'Asia/Manila';
+  const defaultPlatformFeeBpsText = lobbyEnv.DEFAULT_PLATFORM_FEE_BPS || '500';
+  if (!/^\d+$/.test(defaultPlatformFeeBpsText)) {
+    throw new Error(
+      'DEFAULT_PLATFORM_FEE_BPS must be an integer from 0 to 1000.',
+    );
+  }
+  const defaultPlatformFeeBps = Number(defaultPlatformFeeBpsText);
+  if (defaultPlatformFeeBps < 0 || defaultPlatformFeeBps > 1000) {
+    throw new Error(
+      'DEFAULT_PLATFORM_FEE_BPS must be an integer from 0 to 1000.',
+    );
+  }
   new Intl.DateTimeFormat('en-PH', { timeZone: timezone }).format();
   return {
     plugins: [react()],
@@ -23,6 +36,7 @@ export default defineConfig(({ mode }) => {
         appName: 'Rampage',
         timezone,
         environment: mode,
+        defaultPlatformFeeBps,
       }),
     },
   };

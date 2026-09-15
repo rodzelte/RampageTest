@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 export function useQuery<T>(load: (signal: AbortSignal) => Promise<T>) {
   const [state, setState] = useState<{
@@ -28,5 +28,6 @@ export function useQuery<T>(load: (signal: AbortSignal) => Promise<T>) {
       });
     return () => controller.abort();
   }, [load, revision]);
-  return { ...state, reload: () => setRevision((value) => value + 1) };
+  const reload = useCallback(() => setRevision((value) => value + 1), []);
+  return { ...state, reload };
 }

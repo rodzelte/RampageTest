@@ -6,6 +6,11 @@ import {
   staffSchema,
   discordIdSchema,
   topupSchema,
+  discordChannelSchema,
+  lobbySchema,
+  lobbyPlayerSchema,
+  platformFeeBpsSchema,
+  sideBetSchema,
 } from '../../shared/models';
 import {
   getStaffSession,
@@ -13,6 +18,10 @@ import {
 } from '../../shared/staff-auth';
 import { dateBounds } from './dates';
 import { dashboardConfig } from './config';
+import {
+  parsePercentToBasisPoints,
+  parsePhpToCentavos,
+} from '../../shared/money';
 
 export const PAGE_SIZE = 25;
 const walletBalance = z.object({
@@ -57,6 +66,31 @@ const topupWithMember = topupSchema.extend({
   }),
 });
 export type TopupWithMember = z.infer<typeof topupWithMember>;
+
+const lobbyPlayerWithMember = lobbyPlayerSchema.extend({
+  members: z
+    .object({
+      discord_user_id: discordIdSchema,
+      discord_username: z.string().nullable(),
+      display_name: z.string().nullable(),
+    })
+    .optional(),
+});
+const lobbyWithRelations = lobbySchema.extend({
+  discord_channels: z.object({ channel_name: z.string() }).nullable(),
+  lobby_players: z.array(lobbyPlayerWithMember),
+  side_bets: z.array(sideBetSchema),
+});
+export type LobbyWithRelations = z.infer<typeof lobbyWithRelations>;
+export type CreateLobbyInput = {
+  displayName: string;
+  channel: z.infer<typeof discordChannelSchema>;
+  rosterEntry: string;
+  sideBettingEnabled: boolean;
+  sideBetMinimum: string;
+  sideBetMaximum: string;
+  platformFee: string;
+};
 export type PaymentFilters = {
   date: string;
   status: string;
@@ -298,6 +332,217 @@ export async function loadPayments(
   if (count === null)
     throw new Error('Payment count is unavailable. Please try again.');
   return { rows: z.array(topupWithMember).parse(data), count };
+}
+
+export async function loadDiscordChannels(
+  client: SupabaseClient,
+  signal: AbortSignal,
+) {
+  const { data, error } = await client
+    .from('discord_channels')
+    .select('*')
+    .eq('active', true)
+    .eq('can_post', true)
+    .order('channel_name')
+    .abortSignal(signal);
+  queryError(error, 'Discord channels');
+  return z.array(discordChannelSchema).parse(data);
+}
+
+export async function loadLobbies(client: SupabaseClient, signal: AbortSignal) {
+  const { data, error } = await client
+    .from('lobbies')
+    .select('*,discord_channels(channel_name),lobby_players(*),side_bets(*)')
+    .order('created_at', { ascending: false })
+    .order('id')
+    .abortSignal(signal);
+  queryError(error, 'lobbies');
+  return z.array(lobbyWithRelations).parse(data);
+}
+
+export async function loadLobby(
+  client: SupabaseClient,
+  lobbyId: string,
+  signal: AbortSignal,
+) {
+  z.uuid().parse(lobbyId);
+  const { data, error } = await client
+    .from('lobbies')
+    .select(
+      '*,discord_channels(channel_name),lobby_players(*,members(discord_user_id,discord_username,display_name)),side_bets(*)',
+    )
+    .eq('id', lobbyId)
+    .abortSignal(signal)
+    .single();
+  queryError(error, 'lobby');
+  return lobbyWithRelations.parse(data);
+}
+
+export async function loadLobbyEligibleMembers(
+  client: SupabaseClient,
+  search: string,
+  signal: AbortSignal,
+) {
+  let query = client
+    .from('members')
+    .select('*,wallets(available_centavos,reserved_centavos)')
+    .eq('status', 'ACTIVE');
+  if (search.trim()) query = query.or(memberSearchFilter(search));
+  const { data, error } = await query
+    .order('display_name')
+    .order('discord_user_id')
+    .limit(50)
+    .abortSignal(signal);
+  queryError(error, 'eligible members');
+  return z.array(memberWithWallet).parse(data);
+}
+
+function lobbyMutationError(error: { code?: string; message: string }) {
+  if (error.code === '42501' && /immutable|OWNER role/i.test(error.message))
+    return new Error(error.message);
+  if (error.code === '42501')
+    return new StaffAuthorizationError(
+      'Only active OWNER and ADMIN accounts can manage OPEN lobbies.',
+    );
+  if (error.code === '23505')
+    return new Error('This member is already active in the lobby.');
+  if (error.code === '23514')
+    return new Error('That team already has five active players.');
+  if (error.code === '22003')
+    return new Error('Insufficient available balance for the roster entry.');
+  if (error.code === '22023') return new Error(error.message);
+  return new Error(
+    'Unable to update the lobby. Check your connection and try again.',
+  );
+}
+
+export function parseCreateLobbyInput(input: CreateLobbyInput) {
+  const displayName = input.displayName.trim();
+  if (!displayName || displayName.length > 80)
+    throw new Error('Lobby name must be 1 to 80 characters.');
+  const rosterEntryCentavos = parsePhpToCentavos(input.rosterEntry);
+  if (rosterEntryCentavos <= 0)
+    throw new Error('Roster entry must be greater than zero.');
+  const platformFeeBps = platformFeeBpsSchema.parse(
+    parsePercentToBasisPoints(input.platformFee),
+  );
+  let sideBetMinCentavos: number | null = null;
+  let sideBetMaxCentavos: number | null = null;
+  if (input.sideBettingEnabled) {
+    sideBetMinCentavos = parsePhpToCentavos(input.sideBetMinimum);
+    sideBetMaxCentavos = parsePhpToCentavos(input.sideBetMaximum);
+    if (
+      sideBetMinCentavos < rosterEntryCentavos ||
+      sideBetMaxCentavos < sideBetMinCentavos
+    )
+      throw new Error(
+        'Side-bet minimum must be at least the roster entry, and the maximum must be at least the minimum.',
+      );
+  }
+  return {
+    displayName,
+    rosterEntryCentavos,
+    platformFeeBps,
+    sideBetMinCentavos,
+    sideBetMaxCentavos,
+  };
+}
+
+export async function createLobby(
+  client: SupabaseClient,
+  input: CreateLobbyInput,
+) {
+  const parsed = parseCreateLobbyInput(input);
+  const channel = discordChannelSchema.parse(input.channel);
+  const { data, error } = await client
+    .rpc('create_lobby', {
+      p_display_name: parsed.displayName,
+      p_discord_guild_id: channel.guild_id,
+      p_discord_channel_id: channel.channel_id,
+      p_roster_entry_centavos: parsed.rosterEntryCentavos,
+      p_side_betting_enabled: input.sideBettingEnabled,
+      p_side_bet_min_centavos: parsed.sideBetMinCentavos,
+      p_side_bet_max_centavos: parsed.sideBetMaxCentavos,
+      p_platform_fee_bps: parsed.platformFeeBps,
+    })
+    .single();
+  if (error) throw lobbyMutationError(error);
+  return lobbySchema.parse(data);
+}
+
+export async function updateLobby(
+  client: SupabaseClient,
+  lobbyId: string,
+  input: CreateLobbyInput,
+) {
+  z.uuid().parse(lobbyId);
+  const parsed = parseCreateLobbyInput(input);
+  const channel = discordChannelSchema.parse(input.channel);
+  const { data, error } = await client
+    .rpc('update_lobby', {
+      p_lobby_id: lobbyId,
+      p_display_name: parsed.displayName,
+      p_discord_channel_id: channel.channel_id,
+      p_roster_entry_centavos: parsed.rosterEntryCentavos,
+      p_side_betting_enabled: input.sideBettingEnabled,
+      p_side_bet_min_centavos: parsed.sideBetMinCentavos,
+      p_side_bet_max_centavos: parsed.sideBetMaxCentavos,
+      p_platform_fee_bps: parsed.platformFeeBps,
+    })
+    .single();
+  if (error) throw lobbyMutationError(error);
+  return lobbySchema.parse(data);
+}
+
+async function runLobbyLifecycle(
+  client: SupabaseClient,
+  lobbyId: string,
+  rpc: 'postpone_lobby' | 'resume_lobby' | 'cancel_lobby' | 'archive_lobby',
+) {
+  z.uuid().parse(lobbyId);
+  const { data, error } = await client
+    .rpc(rpc, { p_lobby_id: lobbyId })
+    .single();
+  if (error) throw lobbyMutationError(error);
+  return lobbySchema.parse(data);
+}
+
+export const postponeLobby = (client: SupabaseClient, lobbyId: string) =>
+  runLobbyLifecycle(client, lobbyId, 'postpone_lobby');
+export const resumeLobby = (client: SupabaseClient, lobbyId: string) =>
+  runLobbyLifecycle(client, lobbyId, 'resume_lobby');
+export const cancelLobby = (client: SupabaseClient, lobbyId: string) =>
+  runLobbyLifecycle(client, lobbyId, 'cancel_lobby');
+export const archiveLobby = (client: SupabaseClient, lobbyId: string) =>
+  runLobbyLifecycle(client, lobbyId, 'archive_lobby');
+
+export async function addLobbyPlayer(
+  client: SupabaseClient,
+  input: { lobbyId: string; memberId: string; team: 'RADIANT' | 'DIRE' },
+) {
+  z.uuid().parse(input.lobbyId);
+  z.uuid().parse(input.memberId);
+  const { data, error } = await client
+    .rpc('add_lobby_player', {
+      p_lobby_id: input.lobbyId,
+      p_member_id: input.memberId,
+      p_team: input.team,
+    })
+    .single();
+  if (error) throw lobbyMutationError(error);
+  return lobbyPlayerSchema.parse(data);
+}
+
+export async function removeLobbyPlayer(
+  client: SupabaseClient,
+  lobbyPlayerId: string,
+) {
+  z.uuid().parse(lobbyPlayerId);
+  const { data, error } = await client
+    .rpc('remove_lobby_player', { p_lobby_player_id: lobbyPlayerId })
+    .single();
+  if (error) throw lobbyMutationError(error);
+  return lobbyPlayerSchema.parse(data);
 }
 
 async function requireCurrentOwner(client: SupabaseClient) {

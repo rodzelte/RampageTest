@@ -11,6 +11,7 @@ import { handleTopupCommand } from '../src/bot/commands/topup';
 import type { BotConfig } from '../src/bot/config';
 import type { QrPhProvider } from '../src/bot/providers/qrph';
 import { readBotConfig } from '../src/bot/config';
+import { EphemeralTopupRegistry } from '../src/bot/notifications/topupEphemeral';
 
 const memberId = '80000000-0000-4000-8000-000000000001';
 const topupId = '80000000-0000-4000-8000-000000000002';
@@ -24,6 +25,7 @@ const config: BotConfig = {
   TOPUP_MIN_CENTAVOS: 10_000,
   TOPUP_MAX_CENTAVOS: 10_000_000,
   TOPUP_EXPIRY_MINUTES: 30,
+  DEFAULT_PLATFORM_FEE_BPS: 500,
   NODE_ENV: 'test',
 };
 
@@ -109,14 +111,21 @@ const interactionIdentity = {
 
 describe('top-up amount limits', () => {
   it('uses TOPUP_PROVIDER=qrph_mock and rejects the mock provider in production', () => {
-    expect(
+    const parsed = readBotConfig({
+      ...config,
+      TOPUP_MIN_CENTAVOS: String(config.TOPUP_MIN_CENTAVOS),
+      TOPUP_MAX_CENTAVOS: String(config.TOPUP_MAX_CENTAVOS),
+      TOPUP_EXPIRY_MINUTES: String(config.TOPUP_EXPIRY_MINUTES),
+      DEFAULT_PLATFORM_FEE_BPS: undefined,
+    } as unknown as NodeJS.ProcessEnv);
+    expect(parsed.TOPUP_PROVIDER).toBe('qrph_mock');
+    expect(parsed.DEFAULT_PLATFORM_FEE_BPS).toBe(500);
+    expect(() =>
       readBotConfig({
         ...config,
-        TOPUP_MIN_CENTAVOS: String(config.TOPUP_MIN_CENTAVOS),
-        TOPUP_MAX_CENTAVOS: String(config.TOPUP_MAX_CENTAVOS),
-        TOPUP_EXPIRY_MINUTES: String(config.TOPUP_EXPIRY_MINUTES),
-      } as unknown as NodeJS.ProcessEnv).TOPUP_PROVIDER,
-    ).toBe('qrph_mock');
+        DEFAULT_PLATFORM_FEE_BPS: '1001',
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow();
     expect(() =>
       readBotConfig({
         DISCORD_BOT_TOKEN: 'test-token',
@@ -256,16 +265,24 @@ describe('/topup service and Discord privacy', () => {
     const { client } = serviceClient();
     const deferReply = vi.fn(async (payload: unknown) => void payload);
     const editReply = vi.fn(async (payload: unknown) => void payload);
+    const reply = vi.fn();
+    const followUp = vi.fn();
+    const channelSend = vi.fn();
+    const ephemeralTopups = new EphemeralTopupRegistry();
     const interaction = {
       ...interactionIdentity,
       options: { getString: () => '100' },
       deferReply,
       editReply,
+      reply,
+      followUp,
+      channel: { send: channelSend },
     } as unknown as ChatInputCommandInteraction;
     await handleTopupCommand(interaction, {
       client: client as SupabaseClient,
       provider: new MockQrPhProvider(),
       config,
+      ephemeralTopups,
     });
     expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
     expect(editReply).toHaveBeenCalledOnce();
@@ -281,5 +298,9 @@ describe('/topup service and Discord privacy', () => {
     ]);
     expect(response.embeds[0]?.toJSON().image?.url).toMatch(/^attachment:\/\//);
     expect(response.embeds[0]?.toJSON().footer?.text).toContain('Only you');
+    expect(reply).not.toHaveBeenCalled();
+    expect(followUp).not.toHaveBeenCalled();
+    expect(channelSend).not.toHaveBeenCalled();
+    expect(ephemeralTopups.has(topupId)).toBe(true);
   });
 });

@@ -16,6 +16,12 @@ const botConfigSchema = z
       .max(absoluteMaximum)
       .default(absoluteMaximum),
     TOPUP_EXPIRY_MINUTES: z.coerce.number().int().min(1).max(1440).default(30),
+    DEFAULT_PLATFORM_FEE_BPS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(1000)
+      .default(500),
     NODE_ENV: z
       .enum(['development', 'test', 'production'])
       .default('development'),

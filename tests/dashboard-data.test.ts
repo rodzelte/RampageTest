@@ -9,6 +9,11 @@ import {
   sumWalletLiability,
   loadPayments,
   resolveTopupReview,
+  createLobby,
+  loadDiscordChannels,
+  loadLobby,
+  loadLobbies,
+  parseCreateLobbyInput,
 } from '../src/dashboard/lib/data';
 import { dateBounds } from '../src/dashboard/lib/dates';
 import {
@@ -16,6 +21,8 @@ import {
   memberFixture,
   adminFixture,
   topupFixture,
+  discordChannelFixture,
+  lobbyFixture,
 } from './helpers/dashboardClient';
 
 const signal = () => new AbortController().signal;
@@ -131,9 +138,8 @@ describe('dashboard queries and mutation authorization', () => {
     });
     expect(resolved.review_resolution).toBe('APPROVED_CREDIT');
     expect(
-      calls.find((call) =>
-        call.path.endsWith('/owner_resolve_topup_review'),
-      )?.body,
+      calls.find((call) => call.path.endsWith('/owner_resolve_topup_review'))
+        ?.body,
     ).toMatchObject({
       p_credit_amount_centavos: 9000,
       p_reason: 'Confirmed actual cash received',
@@ -217,5 +223,88 @@ describe('dashboard queries and mutation authorization', () => {
     expect(calls.some((call) => call.path.endsWith('/owner_set_admin'))).toBe(
       false,
     );
+  });
+  it('parses lobby money and platform fee exactly', () => {
+    expect(
+      parseCreateLobbyInput({
+        displayName: ' Lobby 1 ',
+        channel: discordChannelFixture,
+        rosterEntry: '100.00',
+        sideBettingEnabled: true,
+        sideBetMinimum: '100',
+        sideBetMaximum: '5000',
+        platformFee: '5.00',
+      }),
+    ).toEqual({
+      displayName: 'Lobby 1',
+      rosterEntryCentavos: 10_000,
+      sideBetMinCentavos: 10_000,
+      sideBetMaxCentavos: 500_000,
+      platformFeeBps: 500,
+    });
+    expect(() =>
+      parseCreateLobbyInput({
+        displayName: 'Lobby',
+        channel: discordChannelFixture,
+        rosterEntry: '1e2',
+        sideBettingEnabled: false,
+        sideBetMinimum: '',
+        sideBetMaximum: '',
+        platformFee: '5',
+      }),
+    ).toThrow();
+    expect(() =>
+      parseCreateLobbyInput({
+        displayName: 'Below participation floor',
+        channel: discordChannelFixture,
+        rosterEntry: '100.00',
+        sideBettingEnabled: true,
+        sideBetMinimum: '99.99',
+        sideBetMaximum: '5000.00',
+        platformFee: '5.00',
+      }),
+    ).toThrow('at least the roster entry');
+    expect(
+      parseCreateLobbyInput({
+        displayName: 'Above participation floor',
+        channel: discordChannelFixture,
+        rosterEntry: '100.00',
+        sideBettingEnabled: true,
+        sideBetMinimum: '200.00',
+        sideBetMaximum: '5000.00',
+        platformFee: '5.00',
+      }).sideBetMinCentavos,
+    ).toBe(20_000);
+  });
+  it('loads safe lobby/channel data and calls the authorized creation RPC', async () => {
+    const { client, calls } = await dashboardClient({
+      signedIn: true,
+      lobbies: [lobbyFixture],
+    });
+    expect(await loadDiscordChannels(client, signal())).toEqual([
+      discordChannelFixture,
+    ]);
+    expect((await loadLobbies(client, signal()))[0]?.id).toBe(lobbyFixture.id);
+    expect((await loadLobby(client, lobbyFixture.id, signal())).status).toBe(
+      'OPEN',
+    );
+    const created = await createLobby(client, {
+      displayName: 'Lobby 2',
+      channel: discordChannelFixture,
+      rosterEntry: '100',
+      sideBettingEnabled: false,
+      sideBetMinimum: '',
+      sideBetMaximum: '',
+      platformFee: '5',
+    });
+    expect(created.status).toBe('OPEN');
+    expect(
+      calls.find((call) => call.path.endsWith('/create_lobby'))?.body,
+    ).toMatchObject({
+      p_roster_entry_centavos: 10_000,
+      p_side_bet_min_centavos: null,
+      p_side_bet_max_centavos: null,
+      p_platform_fee_bps: 500,
+    });
   });
 });

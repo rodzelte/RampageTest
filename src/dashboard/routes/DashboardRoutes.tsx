@@ -8,6 +8,8 @@ import { AdminsPage } from '../pages/AdminsPage';
 import { AuditPage } from '../pages/AuditPage';
 import { PlaceholderPage, SettingsPage } from '../pages/PlaceholderPage';
 import { PaymentsPage } from '../pages/PaymentsPage';
+import { LobbiesPage } from '../pages/LobbiesPage';
+import { LobbyDetailPage } from '../pages/LobbyDetailPage';
 import { canAccessRoute } from './navigation';
 
 function ProtectedRoute() {
@@ -51,10 +53,8 @@ export function DashboardRoutes() {
             <Route path="/admins" element={<AdminsPage />} />
             <Route path="/audit" element={<AuditPage />} />
             <Route path="/settings" element={<SettingsPage />} />
-            <Route
-              path="/lobbies"
-              element={<PlaceholderPage module="lobbies" />}
-            />
+            <Route path="/lobbies" element={<LobbiesPage />} />
+            <Route path="/lobbies/:lobbyId" element={<LobbyDetailPage />} />
             <Route
               path="/rampage"
               element={<PlaceholderPage module="rampage" />}

@@ -9,6 +9,7 @@ import { formatPhp } from '../../shared/money';
 import type { BotConfig } from '../config';
 import type { QrPhProvider } from '../providers/qrph';
 import { createTopupRequest } from '../services/topups';
+import type { EphemeralTopupRegistry } from '../notifications/topupEphemeral';
 
 export async function handleTopupCommand(
   interaction: ChatInputCommandInteraction,
@@ -16,6 +17,7 @@ export async function handleTopupCommand(
     client: SupabaseClient;
     provider: QrPhProvider;
     config: BotConfig;
+    ephemeralTopups: EphemeralTopupRegistry;
   },
 ) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -52,6 +54,7 @@ export async function handleTopupCommand(
         text: 'Only you can see this message. Your wallet will be credited automatically after the payment is successfully verified.',
       });
     await interaction.editReply({ embeds: [embed], files: [attachment] });
+    dependencies.ephemeralTopups.remember(result.topup.id, interaction);
   } catch (error) {
     const message =
       error instanceof Error &&

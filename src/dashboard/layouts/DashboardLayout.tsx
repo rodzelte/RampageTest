@@ -8,7 +8,9 @@ export function DashboardLayout() {
   const { staff, logout } = useAuth();
   const { pathname } = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
-  const current = navigation.find((item) => item.path === pathname);
+  const current = navigation.find(
+    (item) => item.path === pathname || pathname.startsWith(`${item.path}/`),
+  );
   if (!staff) return null;
   return (
     <div className="dashboard-shell">
